@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sugar Bag Counter with Batch Training</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/knn-classifier"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+        }
+        #video, #canvas {
+            width: 100%;
+            max-width: 500px;
+            margin-bottom: 20px;
+        }
+        button {
+            font-size: 18px;
+            padding: 10px 20px;
+            margin: 5px;
+        }
+        #count, #trainingStatus, #modelStatus {
+            font-size: 24px;
+            margin-top: 20px;
+        }
+        #trainingControls {
+            margin-top: 20px;
+        }
+        #progressBar {
+            width: 100%;
+            background-color: #f3f3f3;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        #progress {
+            height: 20px;
+            background-color: #4caf50;
+            width: 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Sugar Bag Counter with Batch Training</h1>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <br>
+    <input type="file" id="fileInput" multiple accept="image/*">
+    <button id="trainBatchBtn" disabled>Train with Batch Images</button>
+    <p id="count">Count: 0</p>
+    <div id="trainingControls">
+        <button id="captureBtn" disabled>Capture and Count</button>
+        <p id="trainingStatus">Training examples: 0</p>
+    </div>
+    
+    <div id="progressBar">
+        <div id="progress"></div>
+    </div>
+    
+    <p id="modelStatus">Loading models...</p>
+
+    <script>
+        const SUGAR_BAG_LABEL = '0';
+        const NOT_SUGAR_BAG_LABEL = '1';
+        const CONFIDENCE_THRESHOLD = 0.7;
+
+        let count = 0;
+        let mobilenet;
+        let classifier;
+        let totalTrainingExamples = 0;
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const countDisplay = document.getElementById('count');
+        const trainingStatus = document.getElementById('trainingStatus');
+        const modelStatus = document.getElementById('modelStatus');
+        const progressBar = document.getElementById('progress');
+        const progressContainer = document.getElementById('progressBar');
+        const trainBatchBtn = document.getElementById('trainBatchBtn');
+        const captureBtn = document.getElementById('captureBtn');
+        const fileInput = document.getElementById('fileInput');
+
+        async function loadModel() {
+            try {
+                console.log('Loading models...');
+                mobilenet = await mobilenet.load();
+                console.log('MobileNet model loaded successfully.');
+
+                classifier = knnClassifier.create();
+                console.log('KNN Classifier created successfully.');
+
+                // Update UI to indicate successful loading
+                modelStatus.textContent = 'Models loaded successfully!';
+                captureBtn.disabled = false; // Enable capture button
+                trainBatchBtn.disabled = false; // Enable train button
+            } catch (error) {
+                console.error('Error loading models:', error);
+                alert('Failed to load models. Please refresh the page or check your network connection.');
+                modelStatus.textContent = 'Error loading models.';
+            }
+        }
+
+        async function setupCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        resolve(video);
+                    };
+                });
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                alert('Camera access denied. Please allow camera access.');
+            }
+        }
+
+        function captureImageAndGetActivation(image) {
+            return tf.tidy(() => {
+                const imgTensor = tf.browser.fromPixels(image);
+                const resizedTensorFrame = tf.image.resizeBilinear(imgTensor, [224, 224]);
+                const normalizedTensorFrame = resizedTensorFrame.div(255);
+                return mobilenet.infer(normalizedTensorFrame, 'conv_preds');
+            });
+        }
+
+        async function trainBatch(images, label) {
+            try {
+                const totalImages = images.length;
+                progressContainer.style.display = 'block'; // Show progress bar
+                for (let i = 0; i < totalImages; i++) {
+                    const image = images[i];
+                    const imgElement = document.createElement('img');
+                    imgElement.src = URL.createObjectURL(image);
+                    await new Promise((resolve) => {
+                        imgElement.onload = () => {
+                            const activation = captureImageAndGetActivation(imgElement);
+                            classifier.addExample(activation, label);
+                            totalTrainingExamples++;
+                            trainingStatus.textContent = `Training examples: ${totalTrainingExamples}`;
+                            
+                            // Update progress
+                            const progressPercentage = ((i + 1) / totalImages) * 100;
+                            progressBar.style.width = progressPercentage + '%';
+                            resolve();
+                        };
+                    });
+                }
+                progressContainer.style.display = 'none'; // Hide progress bar
+            } catch (error) {
+                console.error('Error during training:', error);
+            }
+        }
+
+        async function captureAndCount() {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const activation = captureImageAndGetActivation(canvas);
+            const result = await classifier.classify(activation);
+            if (result[0].label === SUGAR_BAG_LABEL && result[0].confidence > CONFIDENCE_THRESHOLD) {
+                count++;
+                countDisplay.textContent = `Count: ${count}`;
+            }
+        }
+
+        // Event Listeners
+        captureBtn.addEventListener('click', captureAndCount);
+        trainBatchBtn.addEventListener('click', async () => {
+            const files = fileInput.files;
+            if (files.length > 0) {
+                await trainBatch(files, SUGAR_BAG_LABEL);
+            }
+        });
+
+        // Load models when the page is loaded
+        window.onload = async () => {
+            await loadModel();
+            await setupCamera();
+        };
+    </script>
+</body>
+</html>
